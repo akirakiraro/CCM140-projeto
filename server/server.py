@@ -1,4 +1,4 @@
-"""Servidor REP: login, canais, publicacao e eleicao do coordenador."""
+"""Servidor REP: login, canais, publicacao, eleicao e copia do registro."""
 
 import os
 import threading
@@ -8,6 +8,7 @@ import msgpack
 import zmq
 
 from protocol import dispatch
+from replica import pack_channel, pack_login, pack_publication, record_label, store_record
 from store import load_state, save_state
 
 STATE_PATH = os.environ.get("STATE_PATH", "/data/state.json")
@@ -33,6 +34,8 @@ coordinator = ""
 known_servers: list[dict] = []
 my_rank = 0
 coordinator_seen = 0.0
+# O fio do broker e o fio da porta 5560 gravam o mesmo arquivo.
+state_lock = threading.Lock()
 
 
 def decode(raw: bytes) -> dict | None:
@@ -101,15 +104,64 @@ def server_now() -> int:
     return int(time.time() * 1000) + clock_offset
 
 
+def copy_for_replica(state: dict, reply: dict) -> dict | None:
+    op = reply.get("op")
+    if op == "login_ok" and state["logins"]:
+        return pack_login(state["logins"][-1])
+    if op == "create_ok" and state["channels"]:
+        return pack_channel(state["channels"][-1])
+    if op == "publish_ok" and state["publications"]:
+        return pack_publication(state["publications"][-1])
+    return None
+
+
 def serve_one(socket: zmq.Socket, publisher: zmq.Socket, state: dict, context: zmq.Context) -> None:
     message = receive(socket)
-    reply, payload = dispatch(state, message, server_now())
+    with state_lock:
+        reply, payload = dispatch(state, message, server_now())
+        record = copy_for_replica(state, reply)
+        if reply["op"] in PERSIST_OPS:
+            save_state(STATE_PATH, state)
     if payload is not None:
         send_publication(publisher, payload)
-    if reply["op"] in PERSIST_OPS:
-        save_state(STATE_PATH, state)
+    # O bot so segue depois da copia. O proximo pedido no outro servidor ja acha o registro.
+    if record is not None:
+        push_replica(context, record)
     send_reply(socket, reply)
     count_client(context, publisher)
+
+
+def peer_names() -> list[str]:
+    names: list[str] = []
+    for item in known_servers:
+        name = item.get("name")
+        if isinstance(name, str) and name != SERVER_NAME:
+            names.append(name)
+    return names
+
+
+def push_replica(context: zmq.Context, record: dict) -> None:
+    label = record_label(record)
+    sent = {"op": "replicate", "ts": server_now(), "name": SERVER_NAME, "record": record}
+    for name in peer_names():
+        reply = ask(context, sent, f"tcp://{name}:{PEER_PORT}", ELECTION_TIMEOUT_MS)
+        if isinstance(reply, dict) and reply.get("op") == "replicate_ok":
+            continue
+        print(f"replica pendente: {name} {label}", flush=True)
+
+
+def accept_replica(state: dict, message: dict) -> dict:
+    record = message.get("record")
+    try:
+        with state_lock:
+            inserted = store_record(state, record)
+            if inserted:
+                save_state(STATE_PATH, state)
+    except ValueError as exc:
+        return {"op": "error", "ts": server_now(), "error": str(exc)}
+    status = "aplicada" if inserted else "ja estava"
+    print(f"replica {status}: {record_label(record)}", flush=True)
+    return {"op": "replicate_ok", "ts": server_now(), "name": SERVER_NAME}
 
 
 def ask(
@@ -381,15 +433,18 @@ def peer_reply(message: dict | None, arrived: int) -> dict:
     return {"op": "error", "ts": server_now(), "error": f"pedido invalido: {message!r}"}
 
 
-def answer_peer(socket: zmq.Socket) -> None:
+def answer_peer(socket: zmq.Socket, state: dict) -> None:
     message = receive(socket)
+    if isinstance(message, dict) and message.get("op") == "replicate":
+        send_reply(socket, accept_replica(state, message))
+        return
     send_reply(socket, peer_reply(message, server_now()))
 
 
-def peer_loop(context: zmq.Context) -> None:
+def peer_loop(context: zmq.Context, state: dict) -> None:
     socket = open_peer(context)
     while True:
-        answer_peer(socket)
+        answer_peer(socket, state)
 
 
 def main() -> None:
@@ -397,7 +452,7 @@ def main() -> None:
     state = load_state(STATE_PATH)
     context = zmq.Context()
     # O REP do broker fica bloqueado no recv. A eleicao responde neste outro fio.
-    threading.Thread(target=peer_loop, args=(context,), daemon=True).start()
+    threading.Thread(target=peer_loop, args=(context, state), daemon=True).start()
     # O proxy nao guarda historico. A inscricao no topico sobe antes do anuncio.
     threading.Thread(target=listen_servers, args=(context,), daemon=True).start()
     time.sleep(1)
