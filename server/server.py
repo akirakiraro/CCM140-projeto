@@ -8,7 +8,7 @@ import msgpack
 import zmq
 
 from protocol import dispatch
-from replica import pack_channel, pack_login, pack_publication, record_label, store_record
+from replica import accept_remote, fresh_record, pack_state, pull_known, push_to_peers
 from store import load_state, save_state
 
 STATE_PATH = os.environ.get("STATE_PATH", "/data/state.json")
@@ -104,22 +104,11 @@ def server_now() -> int:
     return int(time.time() * 1000) + clock_offset
 
 
-def copy_for_replica(state: dict, reply: dict) -> dict | None:
-    op = reply.get("op")
-    if op == "login_ok" and state["logins"]:
-        return pack_login(state["logins"][-1])
-    if op == "create_ok" and state["channels"]:
-        return pack_channel(state["channels"][-1])
-    if op == "publish_ok" and state["publications"]:
-        return pack_publication(state["publications"][-1])
-    return None
-
-
 def serve_one(socket: zmq.Socket, publisher: zmq.Socket, state: dict, context: zmq.Context) -> None:
     message = receive(socket)
     with state_lock:
         reply, payload = dispatch(state, message, server_now())
-        record = copy_for_replica(state, reply)
+        record = fresh_record(state, reply)
         if reply["op"] in PERSIST_OPS:
             save_state(STATE_PATH, state)
     if payload is not None:
@@ -131,37 +120,42 @@ def serve_one(socket: zmq.Socket, publisher: zmq.Socket, state: dict, context: z
     count_client(context, publisher)
 
 
-def peer_names() -> list[str]:
-    names: list[str] = []
-    for item in known_servers:
-        name = item.get("name")
-        if isinstance(name, str) and name != SERVER_NAME:
-            names.append(name)
-    return names
-
-
 def push_replica(context: zmq.Context, record: dict) -> None:
-    label = record_label(record)
-    sent = {"op": "replicate", "ts": server_now(), "name": SERVER_NAME, "record": record}
-    for name in peer_names():
-        reply = ask(context, sent, f"tcp://{name}:{PEER_PORT}", ELECTION_TIMEOUT_MS)
-        if isinstance(reply, dict) and reply.get("op") == "replicate_ok":
-            continue
-        print(f"replica pendente: {name} {label}", flush=True)
+    push_to_peers(
+        context,
+        ask,
+        known_servers,
+        record,
+        SERVER_NAME,
+        server_now,
+        PEER_PORT,
+        ELECTION_TIMEOUT_MS,
+    )
 
 
 def accept_replica(state: dict, message: dict) -> dict:
-    record = message.get("record")
-    try:
-        with state_lock:
-            inserted = store_record(state, record)
-            if inserted:
-                save_state(STATE_PATH, state)
-    except ValueError as exc:
-        return {"op": "error", "ts": server_now(), "error": str(exc)}
-    status = "aplicada" if inserted else "ja estava"
-    print(f"replica {status}: {record_label(record)}", flush=True)
-    return {"op": "replicate_ok", "ts": server_now(), "name": SERVER_NAME}
+    return accept_remote(state, message, state_lock, STATE_PATH, server_now, SERVER_NAME)
+
+
+def snapshot_reply(state: dict) -> dict:
+    with state_lock:
+        body = pack_state(state)
+    return {"op": "snapshot_ok", "ts": server_now(), "name": SERVER_NAME, **body}
+
+
+def pull_replicas(context: zmq.Context, state: dict) -> None:
+    pull_known(
+        context,
+        ask,
+        state,
+        state_lock,
+        known_servers,
+        SERVER_NAME,
+        server_now,
+        PEER_PORT,
+        ELECTION_TIMEOUT_MS,
+        STATE_PATH,
+    )
 
 
 def ask(
@@ -438,6 +432,9 @@ def answer_peer(socket: zmq.Socket, state: dict) -> None:
     if isinstance(message, dict) and message.get("op") == "replicate":
         send_reply(socket, accept_replica(state, message))
         return
+    if isinstance(message, dict) and message.get("op") == "snapshot":
+        send_reply(socket, snapshot_reply(state))
+        return
     send_reply(socket, peer_reply(message, server_now()))
 
 
@@ -464,6 +461,8 @@ def main() -> None:
     print(f"servidores conhecidos: {known}", flush=True)
     known_servers = known
     my_rank = rank
+    # O historico que ja estava no outro disco entra antes do primeiro pedido do bot.
+    pull_replicas(context, state)
     publisher = open_pub(context)
     elect(context, known, rank)
     if coordinator == SERVER_NAME:
