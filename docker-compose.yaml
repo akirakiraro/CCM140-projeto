@@ -6,6 +6,13 @@ services:
       - "5555:5555"
       - "5556:5556"
 
+  proxy:
+    build: ./proxy
+    container_name: bbs-proxy
+    ports:
+      - "5557:5557"
+      - "5558:5558"
+
   servidor-1:
     build: ./server
     container_name: bbs-servidor-1
@@ -15,6 +22,7 @@ services:
       - servidor-1-data:/data
     depends_on:
       - broker
+      - proxy
 
   servidor-2:
     build: ./server
@@ -25,6 +33,7 @@ services:
       - servidor-2-data:/data
     depends_on:
       - broker
+      - proxy
 
   cliente-1:
     build: ./client
@@ -32,9 +41,11 @@ services:
     environment:
       USER_NAME: bot-1
       BROKER_URL: tcp://broker:5555
+      PROXY_URL: tcp://proxy:5558
     depends_on:
       - servidor-1
       - servidor-2
+      - proxy
 
   cliente-2:
     build: ./client
@@ -42,9 +53,11 @@ services:
     environment:
       USER_NAME: bot-2
       BROKER_URL: tcp://broker:5555
+      PROXY_URL: tcp://proxy:5558
     depends_on:
       - servidor-1
       - servidor-2
+      - proxy
 
 volumes:
   servidor-1-data:

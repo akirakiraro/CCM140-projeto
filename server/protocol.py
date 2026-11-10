@@ -1,4 +1,4 @@
-"""Regras de login, canal e listagem. Respostas levam o ts do servidor."""
+"""Regras de login, canal, listagem e publicacao. Respostas levam o ts do servidor."""
 
 import re
 from typing import Any
@@ -58,25 +58,50 @@ def handle_list(state: ServerState, message: dict[str, Any], now_ms: int) -> dic
     return {"op": "list_ok", "ts": now_ms, "channels": channel_names(state)}
 
 
-def dispatch(state: ServerState, message: Any, now_ms: int) -> dict:
+def require_text(value: Any) -> str:
+    if not isinstance(value, str) or value == "" or len(value) > 1024:
+        raise ValueError(
+            f"text invalido: {value!r}; esperado string de 1 a 1024 caracteres"
+        )
+    return value
+
+
+def handle_publish(state: ServerState, message: dict[str, Any], now_ms: int) -> tuple[dict, dict]:
+    user = require_name(message.get("user"), "user")
+    channel = require_name(message.get("channel"), "channel")
+    text = require_text(message.get("text"))
+    request_ts = require_ts(message)
+    if channel not in channel_names(state):
+        raise ValueError(f"canal nao existe: {channel!r}")
+    state["publications"].append(
+        {"user": user, "channel": channel, "text": text, "ts": now_ms, "request_ts": request_ts}
+    )
+    reply = {"op": "publish_ok", "ts": now_ms, "user": user, "channel": channel}
+    payload = {"op": "channel_message", "ts": now_ms, "user": user, "channel": channel, "text": text}
+    return reply, payload
+
+
+def dispatch(state: ServerState, message: Any, now_ms: int) -> tuple[dict, dict | None]:
     now_ms = server_now(now_ms)
     if not isinstance(message, dict):
-        return {"op": "error", "ts": now_ms, "error": f"mensagem invalida: {message!r}"}
+        return {"op": "error", "ts": now_ms, "error": f"mensagem invalida: {message!r}"}, None
     op = message.get("op")
     try:
-        if op == "login":
-            return handle_login(state, message, now_ms)
-        if op == "create_channel":
-            return handle_create(state, message, now_ms)
-        if op == "list_channels":
-            return handle_list(state, message, now_ms)
+        return _route(state, message, now_ms, op)
     except ValueError as exc:
-        return _error_reply(op, message, now_ms, str(exc))
-    return {
-        "op": "error",
-        "ts": now_ms,
-        "error": f"operacao desconhecida: {op!r}",
-    }
+        return _error_reply(op, message, now_ms, str(exc)), None
+
+
+def _route(state: ServerState, message: dict, now_ms: int, op: Any) -> tuple[dict, dict | None]:
+    if op == "login":
+        return handle_login(state, message, now_ms), None
+    if op == "create_channel":
+        return handle_create(state, message, now_ms), None
+    if op == "list_channels":
+        return handle_list(state, message, now_ms), None
+    if op == "publish":
+        return handle_publish(state, message, now_ms)
+    return {"op": "error", "ts": now_ms, "error": f"operacao desconhecida: {op!r}"}, None
 
 
 def _error_reply(op: Any, message: dict, now_ms: int, reason: str) -> dict:
@@ -84,6 +109,8 @@ def _error_reply(op: Any, message: dict, now_ms: int, reason: str) -> dict:
         reply = {"op": "login_err", "ts": now_ms, "error": reason}
     elif op == "create_channel":
         reply = {"op": "create_err", "ts": now_ms, "error": reason}
+    elif op == "publish":
+        reply = {"op": "publish_err", "ts": now_ms, "error": reason}
     else:
         reply = {"op": "error", "ts": now_ms, "error": reason}
     if isinstance(message.get("user"), str):

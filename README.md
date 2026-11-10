@@ -13,7 +13,9 @@ Na raiz do repositório `CCM140-projeto`:
 docker compose up --build
 ```
 
-Sobe 1 broker, 2 servidores e 2 clientes. A correção prevista no enunciado é `docker compose up`. Para encerrar: `docker compose down`.
+Sobe 1 broker, 1 proxy Pub/Sub, 2 servidores e 2 clientes. A correção prevista no enunciado é `docker compose up`. Para encerrar: `docker compose down`.
+
+O proxy é o da aula (`zmq.proxy` entre XSUB e XPUB). Publicadores vão conectar em `tcp://proxy:5557`. Inscritos vão conectar em `tcp://proxy:5558`. Ele não lê a mensagem; só encaminha.
 
 Os volumes `servidor-1-data` e `servidor-2-data` sobrevivem a um restart. Cada um é de um servidor só: o enunciado não permite compartilhar o arquivo entre servidores.
 
@@ -30,6 +32,13 @@ Os volumes `servidor-1-data` e `servidor-2-data` sobrevivem a um restart. Cada u
 
 - `logins`: cada login bem-sucedido, com o nome e o timestamp do servidor no momento do registro
 - `channels`: nome, criador e timestamp de criação
+- `publications`: cada publicação aceita, com usuário, canal, texto, `request_ts` (relógio de quem pediu) e `ts` (relógio do servidor no envio ao canal)
+
+**Publicação:** o bot pede com `publish` (canal, texto e `ts` do pedido). O servidor só publica se o canal existe no arquivo dele. A mensagem no proxy vai em dois quadros ZeroMQ: o nome do canal e o corpo em MessagePack (`op=channel_message`, usuário, canal, texto e `ts` do servidor). A resposta ao bot é `publish_ok` ou `publish_err`.
+
+**Inscrição:** o bot mantém um socket SUB em `tcp://proxy:5558` junto com o REQ do broker. Enquanto tiver menos de 3 inscrições, cada volta sorteia um canal da lista em que ainda não entrou. O que chega é impresso com o canal, o texto, o `ts` de envio (veio na mensagem) e o `ts` de recebimento (relógio do bot ao receber).
+
+**Volta do bot:** se a lista tem menos de 5 canais, cria um. O nome é `c` mais o próximo número que não está na lista (`c1`, `c2`, ...). Depois escolhe um canal dessa lista e envia 10 textos aleatórios (`m` e um número), com 1 segundo entre cada envio.
 
 Gravação atômica (arquivo temporário + rename) para um restart no meio da escrita não corromper o estado.
 
