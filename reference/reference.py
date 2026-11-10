@@ -1,4 +1,4 @@
-"""Referencia dos servidores: rank, lista, heartbeat e a hora do relogio."""
+"""Referencia dos servidores: rank, lista e heartbeat, sem devolver a hora."""
 
 import re
 import time
@@ -97,7 +97,7 @@ def heartbeat_reply(message: dict) -> dict:
     if item is None:
         return {"op": "error", "ts": now_ms(), "error": f"servidor desconhecido: {name!r}"}
     mark_seen(item)
-    return {"op": "heartbeat_ok", "ts": now_ms(), "name": name}
+    return {"op": "heartbeat_ok", "name": name}
 
 
 def observe(message: dict | None) -> None:

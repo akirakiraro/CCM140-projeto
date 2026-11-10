@@ -25,7 +25,7 @@ PERSIST_OPS = ("login_ok", "create_ok", "publish_ok")
 clock = 0
 clock_lock = threading.Lock()
 client_messages = 0
-# ts do servidor = relogio da maquina + este offset, vindo do heartbeat.
+# ts do servidor = relogio da maquina + este offset, pedido ao coordenador.
 clock_offset = 0
 coordinator = ""
 
@@ -155,24 +155,48 @@ def count_client(context: zmq.Context) -> None:
     global client_messages
     client_messages += 1
     if client_messages % 10 == 0:
-        sync_clock(context)
+        send_heartbeat(context)
+    if client_messages % 15 == 0:
+        sync_from_coordinator(context)
 
 
-def sync_clock(context: zmq.Context) -> None:
-    global clock_offset
+def send_heartbeat(context: zmq.Context) -> None:
     sent = {"op": "heartbeat", "ts": server_now(), "name": SERVER_NAME}
-    remote = reply_ts(ask(context, sent))
-    clock_offset = remote - int(time.time() * 1000)
-    print(f"relogio ajustado: ts_referencia={remote} offset_ms={clock_offset}", flush=True)
-
-
-def reply_ts(reply: dict | None) -> int:
+    reply = ask(context, sent)
     if not isinstance(reply, dict) or reply.get("op") != "heartbeat_ok":
-        raise RuntimeError(f"heartbeat invalido: {reply!r}; esperado heartbeat_ok com ts inteiro")
-    remote = reply.get("ts")
-    if isinstance(remote, bool) or not isinstance(remote, int):
-        raise RuntimeError(f"heartbeat invalido: {reply!r}; esperado heartbeat_ok com ts inteiro")
-    return remote
+        raise RuntimeError(f"heartbeat invalido: {reply!r}; esperado heartbeat_ok")
+
+
+def sync_from_coordinator(context: zmq.Context) -> None:
+    if coordinator == "" or coordinator == SERVER_NAME:
+        return
+    t1 = server_now()
+    sent = {"op": "clock", "ts": t1, "name": SERVER_NAME}
+    url = f"tcp://{coordinator}:{PEER_PORT}"
+    reply = ask(context, sent, url, ELECTION_TIMEOUT_MS)
+    apply_berkeley(t1, server_now(), reply)
+
+
+def clock_points(reply: dict | None) -> tuple[int, int]:
+    if not isinstance(reply, dict) or reply.get("op") != "clock_ok":
+        raise RuntimeError(f"relogio invalido: {reply!r}; esperado clock_ok com t2 e ts inteiros")
+    t2 = reply.get("t2")
+    t3 = reply.get("ts")
+    if not is_rank(t2) or not is_rank(t3):
+        raise RuntimeError(f"relogio invalido: {reply!r}; esperado clock_ok com t2 e ts inteiros")
+    return (int(t2), int(t3))
+
+
+def apply_berkeley(t1: int, t4: int, reply: dict | None) -> None:
+    global clock_offset
+    t2, t3 = clock_points(reply)
+    # t1 e t4 ja incluem o offset anterior. Theta e so o ajuste desta volta.
+    theta = ((t2 - t1) + (t3 - t4)) // 2
+    clock_offset += theta
+    print(
+        f"relogio ajustado: coordenador={coordinator} ts={t3} offset_ms={clock_offset}",
+        flush=True,
+    )
 
 
 def server_list(reply: dict | None) -> list[dict]:
@@ -298,14 +322,17 @@ def open_peer(context: zmq.Context) -> zmq.Socket:
     return socket
 
 
-def peer_reply(message: dict | None) -> dict:
+def peer_reply(message: dict | None, arrived: int) -> dict:
     if isinstance(message, dict) and message.get("op") == "election":
         return {"op": "election_ok", "ts": server_now(), "name": SERVER_NAME}
+    if isinstance(message, dict) and message.get("op") == "clock":
+        return {"op": "clock_ok", "ts": server_now(), "name": SERVER_NAME, "t2": arrived}
     return {"op": "error", "ts": server_now(), "error": f"pedido invalido: {message!r}"}
 
 
 def answer_peer(socket: zmq.Socket) -> None:
-    send_reply(socket, peer_reply(receive(socket)))
+    message = receive(socket)
+    send_reply(socket, peer_reply(message, server_now()))
 
 
 def peer_loop(context: zmq.Context) -> None:
