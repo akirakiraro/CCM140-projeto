@@ -13,7 +13,9 @@ Na raiz do repositório `CCM140-projeto`:
 docker compose up --build
 ```
 
-Sobe 1 broker, 2 servidores e 2 clientes. A correção prevista no enunciado é `docker compose up`. Para encerrar: `docker compose down`.
+Sobe 1 broker, 1 proxy Pub/Sub, 2 servidores e 2 clientes. A correção prevista no enunciado é `docker compose up`. Para encerrar: `docker compose down`.
+
+O proxy é o da aula (`zmq.proxy` entre XSUB e XPUB). Publicadores vão conectar em `tcp://proxy:5557`. Inscritos vão conectar em `tcp://proxy:5558`. Ele não lê a mensagem; só encaminha.
 
 Os volumes `servidor-1-data` e `servidor-2-data` sobrevivem a um restart. Cada um é de um servidor só: o enunciado não permite compartilhar o arquivo entre servidores.
 

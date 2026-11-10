@@ -6,6 +6,13 @@ services:
       - "5555:5555"
       - "5556:5556"
 
+  proxy:
+    build: ./proxy
+    container_name: bbs-proxy
+    ports:
+      - "5557:5557"
+      - "5558:5558"
+
   servidor-1:
     build: ./server
     container_name: bbs-servidor-1
