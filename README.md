@@ -36,6 +36,8 @@ Os volumes `servidor-1-data` e `servidor-2-data` sobrevivem a um restart. Cada u
 
 **Publicação:** o bot pede com `publish` (canal, texto e `ts` do pedido). O servidor só publica se o canal existe no arquivo dele. A mensagem no proxy vai em dois quadros ZeroMQ: o nome do canal e o corpo em MessagePack (`op=channel_message`, usuário, canal, texto e `ts` do servidor). A resposta ao bot é `publish_ok` ou `publish_err`.
 
+**Inscrição:** o bot mantém um socket SUB em `tcp://proxy:5558` junto com o REQ do broker. Na primeira lista de canais que não vem vazia, sorteia um canal e se inscreve só nele. O que chega nesse canal é impresso com o canal, o texto, o `ts` de envio (veio na mensagem) e o `ts` de recebimento (relógio do bot ao receber).
+
 Gravação atômica (arquivo temporário + rename) para um restart no meio da escrita não corromper o estado.
 
 **Relógio das mensagens:** campo `ts`, inteiro, epoch em milissegundos, preenchido por quem envia.
