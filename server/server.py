@@ -13,19 +13,26 @@ from store import load_state, save_state
 STATE_PATH = os.environ.get("STATE_PATH", "/data/state.json")
 BROKER_URL = os.environ.get("BROKER_URL", "tcp://broker:5556")
 PUB_URL = os.environ.get("PUB_URL", "tcp://proxy:5557")
+SUB_URL = os.environ.get("SUB_URL", "tcp://proxy:5558")
+SERVERS_TOPIC = b"servers"
 REF_URL = os.environ.get("REF_URL", "tcp://referencia:5559")
 SERVER_NAME = os.environ.get("SERVER_NAME", "servidor")
 # 5555-5559 ja sao broker, proxy e referencia. A eleicao fala de servidor para servidor.
 PEER_PORT = 5560
 ELECTION_TIMEOUT_MS = 3000
+# A referencia tambem espera 30 s. Da tempo de um ajuste de relogio entre os bots.
+COORDINATOR_SILENCE_S = 30
 PERSIST_OPS = ("login_ok", "create_ok", "publish_ok")
 # Lamport: sobe 1 antes de cada envio; na chegada fica max(local, lc da mensagem).
 clock = 0
 clock_lock = threading.Lock()
 client_messages = 0
-# ts do servidor = relogio da maquina + este offset, vindo do heartbeat.
+# ts do servidor = relogio da maquina + este offset, pedido ao coordenador.
 clock_offset = 0
 coordinator = ""
+known_servers: list[dict] = []
+my_rank = 0
+coordinator_seen = 0.0
 
 
 def decode(raw: bytes) -> dict | None:
@@ -102,7 +109,7 @@ def serve_one(socket: zmq.Socket, publisher: zmq.Socket, state: dict, context: z
     if reply["op"] in PERSIST_OPS:
         save_state(STATE_PATH, state)
     send_reply(socket, reply)
-    count_client(context)
+    count_client(context, publisher)
 
 
 def ask(
@@ -116,13 +123,25 @@ def ask(
     arm_timeout(socket, timeout_ms)
     socket.connect(url)
     message = stamp(fields)
-    socket.send(msgpack.packb(message, use_bin_type=True))
+    if not send_packet(socket, message):
+        print(f"Mensagem enviada: {message}", flush=True)
+        print("Mensagem recebida: None", flush=True)
+        socket.close()
+        return None
     print(f"Mensagem enviada: {message}", flush=True)
     reply = recv_or_none(socket)
     print(f"Mensagem recebida: {reply}", flush=True)
     observe(reply)
     socket.close()
     return reply
+
+
+def send_packet(socket: zmq.Socket, message: dict) -> bool:
+    try:
+        socket.send(msgpack.packb(message, use_bin_type=True))
+        return True
+    except zmq.Again:
+        return False
 
 
 def arm_timeout(socket: zmq.Socket, timeout_ms: int | None) -> None:
@@ -149,28 +168,82 @@ def request_list(context: zmq.Context) -> list[dict]:
     return server_list(ask(context, sent))
 
 
-def count_client(context: zmq.Context) -> None:
+def count_client(context: zmq.Context, publisher: zmq.Socket) -> None:
     global client_messages
     client_messages += 1
     if client_messages % 10 == 0:
-        sync_clock(context)
+        send_heartbeat(context)
+    if client_messages % 15 == 0:
+        sync_from_coordinator(context, publisher)
 
 
-def sync_clock(context: zmq.Context) -> None:
-    global clock_offset
+def send_heartbeat(context: zmq.Context) -> None:
     sent = {"op": "heartbeat", "ts": server_now(), "name": SERVER_NAME}
-    remote = reply_ts(ask(context, sent))
-    clock_offset = remote - int(time.time() * 1000)
-    print(f"relogio ajustado: ts_referencia={remote} offset_ms={clock_offset}", flush=True)
-
-
-def reply_ts(reply: dict | None) -> int:
+    reply = ask(context, sent)
     if not isinstance(reply, dict) or reply.get("op") != "heartbeat_ok":
-        raise RuntimeError(f"heartbeat invalido: {reply!r}; esperado heartbeat_ok com ts inteiro")
-    remote = reply.get("ts")
-    if isinstance(remote, bool) or not isinstance(remote, int):
-        raise RuntimeError(f"heartbeat invalido: {reply!r}; esperado heartbeat_ok com ts inteiro")
-    return remote
+        raise RuntimeError(f"heartbeat invalido: {reply!r}; esperado heartbeat_ok")
+
+
+def sync_from_coordinator(context: zmq.Context, publisher: zmq.Socket) -> None:
+    if coordinator == "" or coordinator == SERVER_NAME:
+        return
+    t1 = server_now()
+    sent = {"op": "clock", "ts": t1, "name": SERVER_NAME}
+    url = f"tcp://{coordinator}:{PEER_PORT}"
+    reply = ask(context, sent, url, ELECTION_TIMEOUT_MS)
+    if not clock_ready(reply):
+        take_over(context, publisher)
+        return
+    apply_berkeley(t1, server_now(), reply)
+    note_coordinator_alive()
+
+
+def clock_ready(reply: dict | None) -> bool:
+    if not isinstance(reply, dict) or reply.get("op") != "clock_ok":
+        return False
+    return is_rank(reply.get("t2")) and is_rank(reply.get("ts"))
+
+
+def note_coordinator_alive() -> None:
+    global coordinator_seen
+    coordinator_seen = time.monotonic()
+
+
+def take_over(context: zmq.Context, publisher: zmq.Socket) -> None:
+    previous = coordinator
+    elect(context, known_servers, my_rank)
+    if coordinator == SERVER_NAME and previous != SERVER_NAME:
+        announce(publisher, coordinator)
+
+
+def watch_coordinator(context: zmq.Context, publisher: zmq.Socket) -> None:
+    if coordinator == "" or coordinator == SERVER_NAME:
+        return
+    if time.monotonic() - coordinator_seen < COORDINATOR_SILENCE_S:
+        return
+    take_over(context, publisher)
+
+
+def clock_points(reply: dict | None) -> tuple[int, int]:
+    if not isinstance(reply, dict) or reply.get("op") != "clock_ok":
+        raise RuntimeError(f"relogio invalido: {reply!r}; esperado clock_ok com t2 e ts inteiros")
+    t2 = reply.get("t2")
+    t3 = reply.get("ts")
+    if not is_rank(t2) or not is_rank(t3):
+        raise RuntimeError(f"relogio invalido: {reply!r}; esperado clock_ok com t2 e ts inteiros")
+    return (int(t2), int(t3))
+
+
+def apply_berkeley(t1: int, t4: int, reply: dict | None) -> None:
+    global clock_offset
+    t2, t3 = clock_points(reply)
+    # t1 e t4 ja incluem o offset anterior. Theta e so o ajuste desta volta.
+    theta = ((t2 - t1) + (t3 - t4)) // 2
+    clock_offset += theta
+    print(
+        f"relogio ajustado: coordenador={coordinator} ts={t3} offset_ms={clock_offset}",
+        flush=True,
+    )
 
 
 def server_list(reply: dict | None) -> list[dict]:
@@ -235,17 +308,63 @@ def ask_election(context: zmq.Context, name: str) -> dict | None:
 
 def adopt(name: str) -> None:
     global coordinator
+    if coordinator == name:
+        return
     coordinator = name
     print(f"coordenador: {coordinator}", flush=True)
+
+
+def open_sub(context: zmq.Context) -> zmq.Socket:
+    socket = context.socket(zmq.SUB)
+    socket.connect(SUB_URL)
+    socket.setsockopt(zmq.SUBSCRIBE, SERVERS_TOPIC)
+    return socket
+
+
+def split_announcement(frames: list[bytes]) -> tuple[str, dict | None]:
+    if len(frames) != 2:
+        return (repr(frames), None)
+    return (frames[0].decode("utf-8", "replace"), decode(frames[1]))
+
+
+def keep_announced(topic: str, body: dict | None) -> None:
+    global coordinator
+    if topic != "servers" or not isinstance(body, dict) or body.get("op") != "coordinator":
+        return
+    name = body.get("name")
+    if isinstance(name, str):
+        coordinator = name
+
+
+def take_announcement(socket: zmq.Socket) -> None:
+    topic, body = split_announcement(socket.recv_multipart())
+    print(f"Mensagem recebida: [{topic!r}, {body}]", flush=True)
+    observe(body)
+    keep_announced(topic, body)
+
+
+def listen_servers(context: zmq.Context) -> None:
+    socket = open_sub(context)
+    while True:
+        take_announcement(socket)
+
+
+def announce(publisher: zmq.Socket, name: str) -> None:
+    payload = stamp({"op": "coordinator", "ts": server_now(), "name": name})
+    body = msgpack.packb(payload, use_bin_type=True)
+    publisher.send_multipart([SERVERS_TOPIC, body])
+    print(f"Mensagem enviada: ['servers', {payload}]", flush=True)
 
 
 def elect(context: zmq.Context, known: list[dict], rank: int) -> None:
     ahead = higher_than(known, rank)
     if not ahead:
         adopt(SERVER_NAME)
+        note_coordinator_alive()
         return
     replies = [ask_election(context, str(item["name"])) for item in ahead]
     adopt(winner_name(replies, known))
+    note_coordinator_alive()
 
 
 def open_peer(context: zmq.Context) -> zmq.Socket:
@@ -254,14 +373,17 @@ def open_peer(context: zmq.Context) -> zmq.Socket:
     return socket
 
 
-def peer_reply(message: dict | None) -> dict:
+def peer_reply(message: dict | None, arrived: int) -> dict:
     if isinstance(message, dict) and message.get("op") == "election":
         return {"op": "election_ok", "ts": server_now(), "name": SERVER_NAME}
+    if isinstance(message, dict) and message.get("op") == "clock":
+        return {"op": "clock_ok", "ts": server_now(), "name": SERVER_NAME, "t2": arrived}
     return {"op": "error", "ts": server_now(), "error": f"pedido invalido: {message!r}"}
 
 
 def answer_peer(socket: zmq.Socket) -> None:
-    send_reply(socket, peer_reply(receive(socket)))
+    message = receive(socket)
+    send_reply(socket, peer_reply(message, server_now()))
 
 
 def peer_loop(context: zmq.Context) -> None:
@@ -271,10 +393,13 @@ def peer_loop(context: zmq.Context) -> None:
 
 
 def main() -> None:
+    global known_servers, my_rank
     state = load_state(STATE_PATH)
     context = zmq.Context()
     # O REP do broker fica bloqueado no recv. A eleicao responde neste outro fio.
     threading.Thread(target=peer_loop, args=(context,), daemon=True).start()
+    # O proxy nao guarda historico. A inscricao no topico sobe antes do anuncio.
+    threading.Thread(target=listen_servers, args=(context,), daemon=True).start()
     time.sleep(1)
     rank = request_rank(context)
     print(f"rank obtido: {rank} nome: {SERVER_NAME}", flush=True)
@@ -282,15 +407,26 @@ def main() -> None:
     time.sleep(1)
     known = request_list(context)
     print(f"servidores conhecidos: {known}", flush=True)
+    known_servers = known
+    my_rank = rank
+    publisher = open_pub(context)
     elect(context, known, rank)
-    serve_forever(open_rep(context), open_pub(context), state, context)
+    if coordinator == SERVER_NAME:
+        announce(publisher, coordinator)
+    serve_forever(open_rep(context), publisher, state, context)
 
 
 def serve_forever(
     socket: zmq.Socket, publisher: zmq.Socket, state: dict, context: zmq.Context
 ) -> None:
+    # Para de esperar cliente quando o coordenador some. O broker nao entrega essa ausencia.
+    poller = zmq.Poller()
+    poller.register(socket, zmq.POLLIN)
     while True:
-        serve_one(socket, publisher, state, context)
+        ready = dict(poller.poll(1000))
+        if socket in ready:
+            serve_one(socket, publisher, state, context)
+        watch_coordinator(context, publisher)
 
 
 if __name__ == "__main__":
