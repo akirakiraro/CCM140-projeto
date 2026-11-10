@@ -17,6 +17,9 @@ SERVER_NAME = os.environ.get("SERVER_NAME", "servidor")
 PERSIST_OPS = ("login_ok", "create_ok", "publish_ok")
 # Lamport: sobe 1 antes de cada envio; na chegada fica max(local, lc da mensagem).
 clock = 0
+client_messages = 0
+# ts do servidor = relogio da maquina + este offset, vindo do heartbeat.
+clock_offset = 0
 
 
 def decode(raw: bytes) -> dict | None:
@@ -79,15 +82,19 @@ def send_reply(socket: zmq.Socket, reply: dict) -> None:
     print(f"Mensagem enviada: {reply}", flush=True)
 
 
-def serve_one(socket: zmq.Socket, publisher: zmq.Socket, state: dict) -> None:
+def server_now() -> int:
+    return int(time.time() * 1000) + clock_offset
+
+
+def serve_one(socket: zmq.Socket, publisher: zmq.Socket, state: dict, context: zmq.Context) -> None:
     message = receive(socket)
-    now_ms = int(time.time() * 1000)
-    reply, payload = dispatch(state, message, now_ms)
+    reply, payload = dispatch(state, message, server_now())
     if payload is not None:
         send_publication(publisher, payload)
     if reply["op"] in PERSIST_OPS:
         save_state(STATE_PATH, state)
     send_reply(socket, reply)
+    count_client(context)
 
 
 def ask(context: zmq.Context, fields: dict) -> dict | None:
@@ -104,13 +111,37 @@ def ask(context: zmq.Context, fields: dict) -> dict | None:
 
 
 def request_rank(context: zmq.Context) -> int:
-    sent = {"op": "rank", "ts": int(time.time() * 1000), "name": SERVER_NAME}
+    sent = {"op": "rank", "ts": server_now(), "name": SERVER_NAME}
     return rank_value(ask(context, sent))
 
 
 def request_list(context: zmq.Context) -> list[dict]:
-    sent = {"op": "list", "ts": int(time.time() * 1000), "name": SERVER_NAME}
+    sent = {"op": "list", "ts": server_now(), "name": SERVER_NAME}
     return server_list(ask(context, sent))
+
+
+def count_client(context: zmq.Context) -> None:
+    global client_messages
+    client_messages += 1
+    if client_messages % 10 == 0:
+        sync_clock(context)
+
+
+def sync_clock(context: zmq.Context) -> None:
+    global clock_offset
+    sent = {"op": "heartbeat", "ts": server_now(), "name": SERVER_NAME}
+    remote = reply_ts(ask(context, sent))
+    clock_offset = remote - int(time.time() * 1000)
+    print(f"relogio ajustado: ts_referencia={remote} offset_ms={clock_offset}", flush=True)
+
+
+def reply_ts(reply: dict | None) -> int:
+    if not isinstance(reply, dict) or reply.get("op") != "heartbeat_ok":
+        raise RuntimeError(f"heartbeat invalido: {reply!r}; esperado heartbeat_ok com ts inteiro")
+    remote = reply.get("ts")
+    if isinstance(remote, bool) or not isinstance(remote, int):
+        raise RuntimeError(f"heartbeat invalido: {reply!r}; esperado heartbeat_ok com ts inteiro")
+    return remote
 
 
 def server_list(reply: dict | None) -> list[dict]:
@@ -141,12 +172,14 @@ def main() -> None:
     time.sleep(1)
     known = request_list(context)
     print(f"servidores conhecidos: {known}", flush=True)
-    serve_forever(open_rep(context), open_pub(context), state)
+    serve_forever(open_rep(context), open_pub(context), state, context)
 
 
-def serve_forever(socket: zmq.Socket, publisher: zmq.Socket, state: dict) -> None:
+def serve_forever(
+    socket: zmq.Socket, publisher: zmq.Socket, state: dict, context: zmq.Context
+) -> None:
     while True:
-        serve_one(socket, publisher, state)
+        serve_one(socket, publisher, state, context)
 
 
 if __name__ == "__main__":
