@@ -90,18 +90,36 @@ def serve_one(socket: zmq.Socket, publisher: zmq.Socket, state: dict) -> None:
     send_reply(socket, reply)
 
 
-def request_rank(context: zmq.Context) -> int:
+def ask(context: zmq.Context, fields: dict) -> dict | None:
     socket = context.socket(zmq.REQ)
     socket.connect(REF_URL)
-    time.sleep(1)
-    message = stamp({"op": "rank", "ts": int(time.time() * 1000), "name": SERVER_NAME})
+    message = stamp(fields)
     socket.send(msgpack.packb(message, use_bin_type=True))
     print(f"Mensagem enviada: {message}", flush=True)
     reply = decode(socket.recv())
     print(f"Mensagem recebida: {reply}", flush=True)
     observe(reply)
     socket.close()
-    return rank_value(reply)
+    return reply
+
+
+def request_rank(context: zmq.Context) -> int:
+    sent = {"op": "rank", "ts": int(time.time() * 1000), "name": SERVER_NAME}
+    return rank_value(ask(context, sent))
+
+
+def request_list(context: zmq.Context) -> list[dict]:
+    sent = {"op": "list", "ts": int(time.time() * 1000), "name": SERVER_NAME}
+    return server_list(ask(context, sent))
+
+
+def server_list(reply: dict | None) -> list[dict]:
+    if not isinstance(reply, dict) or reply.get("op") != "list_ok":
+        raise RuntimeError(f"lista invalida: {reply!r}; esperado list_ok com servers")
+    found = reply.get("servers")
+    if not isinstance(found, list):
+        raise RuntimeError(f"lista invalida: {reply!r}; esperado list_ok com servers")
+    return found
 
 
 def rank_value(reply: dict | None) -> int:
@@ -116,8 +134,13 @@ def rank_value(reply: dict | None) -> int:
 def main() -> None:
     state = load_state(STATE_PATH)
     context = zmq.Context()
+    time.sleep(1)
     rank = request_rank(context)
     print(f"rank obtido: {rank} nome: {SERVER_NAME}", flush=True)
+    # O outro servidor pede o rank neste segundo. A lista sai com os dois nomes.
+    time.sleep(1)
+    known = request_list(context)
+    print(f"servidores conhecidos: {known}", flush=True)
     serve_forever(open_rep(context), open_pub(context), state)
 
 

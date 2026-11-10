@@ -1,4 +1,4 @@
-"""Referencia dos servidores: entrega o rank e guarda nome sem repetir."""
+"""Referencia dos servidores: rank na entrada e lista dos nomes guardados."""
 
 import re
 import time
@@ -37,12 +37,25 @@ def rank_of(name: str) -> int:
 
 
 def reply_for(message: dict | None) -> dict:
-    if not isinstance(message, dict) or message.get("op") != "rank":
+    if not isinstance(message, dict):
         return {"op": "error", "ts": now_ms(), "error": f"pedido invalido: {message!r}"}
+    if message.get("op") == "rank":
+        return rank_reply(message)
+    if message.get("op") == "list":
+        return list_reply()
+    return {"op": "error", "ts": now_ms(), "error": f"pedido invalido: {message!r}"}
+
+
+def rank_reply(message: dict) -> dict:
     name = message.get("name")
     if not isinstance(name, str) or NAME_RE.fullmatch(name) is None:
         return {"op": "error", "ts": now_ms(), "error": f"nome invalido: {name!r}"}
     return {"op": "rank_ok", "ts": now_ms(), "name": name, "rank": rank_of(name)}
+
+
+def list_reply() -> dict:
+    listed = [{"name": item["name"], "rank": item["rank"]} for item in servers]
+    return {"op": "list_ok", "ts": now_ms(), "servers": listed}
 
 
 def observe(message: dict | None) -> None:
