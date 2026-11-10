@@ -12,6 +12,8 @@ from store import load_state, save_state
 STATE_PATH = os.environ.get("STATE_PATH", "/data/state.json")
 BROKER_URL = os.environ.get("BROKER_URL", "tcp://broker:5556")
 PUB_URL = os.environ.get("PUB_URL", "tcp://proxy:5557")
+REF_URL = os.environ.get("REF_URL", "tcp://referencia:5559")
+SERVER_NAME = os.environ.get("SERVER_NAME", "servidor")
 PERSIST_OPS = ("login_ok", "create_ok", "publish_ok")
 
 
@@ -66,9 +68,33 @@ def serve_one(socket: zmq.Socket, publisher: zmq.Socket, state: dict) -> None:
     send_reply(socket, reply)
 
 
+def request_rank(context: zmq.Context) -> int:
+    socket = context.socket(zmq.REQ)
+    socket.connect(REF_URL)
+    time.sleep(1)
+    message = {"op": "rank", "ts": int(time.time() * 1000), "name": SERVER_NAME}
+    socket.send(msgpack.packb(message, use_bin_type=True))
+    print(f"Mensagem enviada: {message}", flush=True)
+    reply = decode(socket.recv())
+    print(f"Mensagem recebida: {reply}", flush=True)
+    socket.close()
+    return rank_value(reply)
+
+
+def rank_value(reply: dict | None) -> int:
+    if not isinstance(reply, dict) or isinstance(reply.get("rank"), bool):
+        raise RuntimeError(f"rank invalido: {reply!r}; esperado mapa com rank inteiro")
+    rank = reply.get("rank")
+    if not isinstance(rank, int):
+        raise RuntimeError(f"rank invalido: {reply!r}; esperado mapa com rank inteiro")
+    return rank
+
+
 def main() -> None:
     state = load_state(STATE_PATH)
     context = zmq.Context()
+    rank = request_rank(context)
+    print(f"rank obtido: {rank} nome: {SERVER_NAME}", flush=True)
     serve_forever(open_rep(context), open_pub(context), state)
 
 

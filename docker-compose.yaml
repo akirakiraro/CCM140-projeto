@@ -13,27 +13,37 @@ services:
       - "5557:5557"
       - "5558:5558"
 
+  referencia:
+    build: ./reference
+    container_name: bbs-referencia
+    ports:
+      - "5559:5559"
+
   servidor-1:
     build: ./server
     container_name: bbs-servidor-1
     environment:
       STATE_PATH: /data/state.json
+      SERVER_NAME: servidor-1
     volumes:
       - servidor-1-data:/data
     depends_on:
       - broker
       - proxy
+      - referencia
 
   servidor-2:
     build: ./server
     container_name: bbs-servidor-2
     environment:
       STATE_PATH: /data/state.json
+      SERVER_NAME: servidor-2
     volumes:
       - servidor-2-data:/data
     depends_on:
       - broker
       - proxy
+      - referencia
 
   cliente-1:
     build: ./client
