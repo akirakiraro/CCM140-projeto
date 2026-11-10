@@ -13,6 +13,8 @@ from store import load_state, save_state
 STATE_PATH = os.environ.get("STATE_PATH", "/data/state.json")
 BROKER_URL = os.environ.get("BROKER_URL", "tcp://broker:5556")
 PUB_URL = os.environ.get("PUB_URL", "tcp://proxy:5557")
+SUB_URL = os.environ.get("SUB_URL", "tcp://proxy:5558")
+SERVERS_TOPIC = b"servers"
 REF_URL = os.environ.get("REF_URL", "tcp://referencia:5559")
 SERVER_NAME = os.environ.get("SERVER_NAME", "servidor")
 # 5555-5559 ja sao broker, proxy e referencia. A eleicao fala de servidor para servidor.
@@ -239,6 +241,48 @@ def adopt(name: str) -> None:
     print(f"coordenador: {coordinator}", flush=True)
 
 
+def open_sub(context: zmq.Context) -> zmq.Socket:
+    socket = context.socket(zmq.SUB)
+    socket.connect(SUB_URL)
+    socket.setsockopt(zmq.SUBSCRIBE, SERVERS_TOPIC)
+    return socket
+
+
+def split_announcement(frames: list[bytes]) -> tuple[str, dict | None]:
+    if len(frames) != 2:
+        return (repr(frames), None)
+    return (frames[0].decode("utf-8", "replace"), decode(frames[1]))
+
+
+def keep_announced(topic: str, body: dict | None) -> None:
+    global coordinator
+    if topic != "servers" or not isinstance(body, dict) or body.get("op") != "coordinator":
+        return
+    name = body.get("name")
+    if isinstance(name, str):
+        coordinator = name
+
+
+def take_announcement(socket: zmq.Socket) -> None:
+    topic, body = split_announcement(socket.recv_multipart())
+    print(f"Mensagem recebida: [{topic!r}, {body}]", flush=True)
+    observe(body)
+    keep_announced(topic, body)
+
+
+def listen_servers(context: zmq.Context) -> None:
+    socket = open_sub(context)
+    while True:
+        take_announcement(socket)
+
+
+def announce(publisher: zmq.Socket, name: str) -> None:
+    payload = stamp({"op": "coordinator", "ts": server_now(), "name": name})
+    body = msgpack.packb(payload, use_bin_type=True)
+    publisher.send_multipart([SERVERS_TOPIC, body])
+    print(f"Mensagem enviada: ['servers', {payload}]", flush=True)
+
+
 def elect(context: zmq.Context, known: list[dict], rank: int) -> None:
     ahead = higher_than(known, rank)
     if not ahead:
@@ -275,6 +319,8 @@ def main() -> None:
     context = zmq.Context()
     # O REP do broker fica bloqueado no recv. A eleicao responde neste outro fio.
     threading.Thread(target=peer_loop, args=(context,), daemon=True).start()
+    # O proxy nao guarda historico. A inscricao no topico sobe antes do anuncio.
+    threading.Thread(target=listen_servers, args=(context,), daemon=True).start()
     time.sleep(1)
     rank = request_rank(context)
     print(f"rank obtido: {rank} nome: {SERVER_NAME}", flush=True)
@@ -282,8 +328,11 @@ def main() -> None:
     time.sleep(1)
     known = request_list(context)
     print(f"servidores conhecidos: {known}", flush=True)
+    publisher = open_pub(context)
     elect(context, known, rank)
-    serve_forever(open_rep(context), open_pub(context), state, context)
+    if coordinator == SERVER_NAME:
+        announce(publisher, coordinator)
+    serve_forever(open_rep(context), publisher, state, context)
 
 
 def serve_forever(
