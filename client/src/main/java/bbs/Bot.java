@@ -8,7 +8,7 @@ import org.zeromq.ZContext;
 import org.zeromq.ZMQ;
 
 /**
- * Bot da parte 1: login, listagem e criacao de canais em loop.
+ * Bot: login, canais e uma publicacao por volta em geral.
  * Exemplo: USER_NAME=bot-1 java -jar bbs-bot.jar
  */
 public final class Bot {
@@ -47,6 +47,7 @@ public final class Bot {
             List<String> channels = list(socket);
             ensure(socket, channels, "geral");
             ensure(socket, channels, "sala-" + USER);
+            publishGeral(socket);
             Thread.sleep(3000);
         }
     }
@@ -58,6 +59,10 @@ public final class Bot {
             return names.stream().map(String::valueOf).toList();
         }
         throw new IllegalArgumentException("channels invalido: " + value);
+    }
+
+    private static void publishGeral(ZMQ.Socket socket) throws Exception {
+        exchange(socket, Messages.publish(USER, "geral", "mensagem de " + USER));
     }
 
     private static void ensure(ZMQ.Socket socket, List<String> known, String channel) throws Exception {

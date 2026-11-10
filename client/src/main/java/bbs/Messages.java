@@ -26,6 +26,14 @@ final class Messages {
         return message;
     }
 
+    static Map<String, Object> publish(String user, String channel, String text) {
+        Map<String, Object> message = base("publish");
+        message.put("user", user);
+        message.put("channel", channel);
+        message.put("text", text);
+        return message;
+    }
+
     private static Map<String, Object> base(String op) {
         Map<String, Object> message = new LinkedHashMap<>();
         message.put("op", op);

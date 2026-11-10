@@ -32,6 +32,9 @@ Os volumes `servidor-1-data` e `servidor-2-data` sobrevivem a um restart. Cada u
 
 - `logins`: cada login bem-sucedido, com o nome e o timestamp do servidor no momento do registro
 - `channels`: nome, criador e timestamp de criação
+- `publications`: cada publicação aceita, com usuário, canal, texto, `request_ts` (relógio de quem pediu) e `ts` (relógio do servidor no envio ao canal)
+
+**Publicação:** o bot pede com `publish` (canal, texto e `ts` do pedido). O servidor só publica se o canal existe no arquivo dele. A mensagem no proxy vai em dois quadros ZeroMQ: o nome do canal e o corpo em MessagePack (`op=channel_message`, usuário, canal, texto e `ts` do servidor). A resposta ao bot é `publish_ok` ou `publish_err`.
 
 Gravação atômica (arquivo temporário + rename) para um restart no meio da escrita não corromper o estado.
 

@@ -22,6 +22,7 @@ services:
       - servidor-1-data:/data
     depends_on:
       - broker
+      - proxy
 
   servidor-2:
     build: ./server
@@ -32,6 +33,7 @@ services:
       - servidor-2-data:/data
     depends_on:
       - broker
+      - proxy
 
   cliente-1:
     build: ./client
