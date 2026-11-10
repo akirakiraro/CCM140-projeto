@@ -9,6 +9,8 @@ import zmq
 BIND = "tcp://*:5559"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 servers: list[dict] = []
+# Mesma regra do servidor: o rank tambem e mensagem, entao leva lc.
+clock = 0
 
 
 def now_ms() -> int:
@@ -43,10 +45,28 @@ def reply_for(message: dict | None) -> dict:
     return {"op": "rank_ok", "ts": now_ms(), "name": name, "rank": rank_of(name)}
 
 
+def observe(message: dict | None) -> None:
+    global clock
+    if not isinstance(message, dict):
+        return
+    seen = message.get("lc")
+    if isinstance(seen, bool) or not isinstance(seen, int):
+        return
+    clock = max(clock, seen)
+
+
+def stamp(message: dict) -> dict:
+    global clock
+    clock += 1
+    message["lc"] = clock
+    return message
+
+
 def serve(socket: zmq.Socket) -> None:
     message = decode(socket.recv())
     print(f"Mensagem recebida: {message}", flush=True)
-    reply = reply_for(message)
+    observe(message)
+    reply = stamp(reply_for(message))
     socket.send(msgpack.packb(reply, use_bin_type=True))
     print(f"Mensagem enviada: {reply}", flush=True)
 

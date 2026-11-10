@@ -15,6 +15,8 @@ PUB_URL = os.environ.get("PUB_URL", "tcp://proxy:5557")
 REF_URL = os.environ.get("REF_URL", "tcp://referencia:5559")
 SERVER_NAME = os.environ.get("SERVER_NAME", "servidor")
 PERSIST_OPS = ("login_ok", "create_ok", "publish_ok")
+# Lamport: sobe 1 antes de cada envio; na chegada fica max(local, lc da mensagem).
+clock = 0
 
 
 def decode(raw: bytes) -> dict | None:
@@ -39,13 +41,32 @@ def open_pub(context: zmq.Context) -> zmq.Socket:
     return socket
 
 
+def observe(message: dict | None) -> None:
+    global clock
+    if not isinstance(message, dict):
+        return
+    seen = message.get("lc")
+    if isinstance(seen, bool) or not isinstance(seen, int):
+        return
+    clock = max(clock, seen)
+
+
+def stamp(message: dict) -> dict:
+    global clock
+    clock += 1
+    message["lc"] = clock
+    return message
+
+
 def receive(socket: zmq.Socket) -> dict | None:
     message = decode(socket.recv())
     print(f"Mensagem recebida: {message}", flush=True)
+    observe(message)
     return message
 
 
 def send_publication(publisher: zmq.Socket, payload: dict) -> None:
+    stamp(payload)
     topic = str(payload["channel"]).encode()
     body = msgpack.packb(payload, use_bin_type=True)
     publisher.send_multipart([topic, body])
@@ -53,6 +74,7 @@ def send_publication(publisher: zmq.Socket, payload: dict) -> None:
 
 
 def send_reply(socket: zmq.Socket, reply: dict) -> None:
+    stamp(reply)
     socket.send(msgpack.packb(reply, use_bin_type=True))
     print(f"Mensagem enviada: {reply}", flush=True)
 
@@ -72,11 +94,12 @@ def request_rank(context: zmq.Context) -> int:
     socket = context.socket(zmq.REQ)
     socket.connect(REF_URL)
     time.sleep(1)
-    message = {"op": "rank", "ts": int(time.time() * 1000), "name": SERVER_NAME}
+    message = stamp({"op": "rank", "ts": int(time.time() * 1000), "name": SERVER_NAME})
     socket.send(msgpack.packb(message, use_bin_type=True))
     print(f"Mensagem enviada: {message}", flush=True)
     reply = decode(socket.recv())
     print(f"Mensagem recebida: {reply}", flush=True)
+    observe(reply)
     socket.close()
     return rank_value(reply)
 

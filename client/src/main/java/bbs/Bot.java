@@ -24,6 +24,8 @@ public final class Bot {
     private static final String PROXY = System.getenv().getOrDefault("PROXY_URL", "tcp://proxy:5558");
     private static final Set<String> SUBSCRIBED = new HashSet<>();
     private static final BlockingQueue<String> JOINS = new LinkedBlockingQueue<>();
+    // Lamport do processo: a thread do REQ e a dos canais compartilham este contador.
+    private static long clock = 0;
 
     private Bot() {}
 
@@ -174,26 +176,41 @@ public final class Bot {
         try {
             Map<String, Object> message = Codec.unpack(body);
             String channel = String.valueOf(message.getOrDefault("channel", topic));
-            System.out.println(incomingLine(channel, message.get("text"), message.get("ts"), received));
+            observe(message.get("lc"));
+            System.out.println(incomingLine(channel, message.get("text"), message.get("ts"), message.get("lc"), received));
         } catch (IOException | IllegalArgumentException ex) {
             System.out.println("Mensagem recebida ilegivel no canal " + topic + ": " + ex.getMessage());
         }
     }
 
-    private static String incomingLine(String channel, Object text, Object sent, long received) {
+    private static String incomingLine(String channel, Object text, Object sent, Object lc, long received) {
         return "Mensagem recebida: {canal=" + channel
             + ", mensagem=" + text
             + ", ts_envio=" + sent
+            + ", lc=" + lc
             + ", ts_recebimento=" + received + "}";
     }
 
     private static Map<String, Object> exchange(ZMQ.Socket socket, Map<String, Object> request)
             throws IOException {
+        stamp(request);
         System.out.println("Mensagem enviada: " + request);
         socket.send(Codec.pack(request));
         byte[] raw = socket.recv();
         Map<String, Object> reply = Codec.unpack(raw);
+        observe(reply.get("lc"));
         System.out.println("Mensagem recebida: " + reply);
         return reply;
+    }
+
+    private static synchronized void stamp(Map<String, Object> message) {
+        clock += 1;
+        message.put("lc", clock);
+    }
+
+    private static synchronized void observe(Object value) {
+        if (value instanceof Number number) {
+            clock = Math.max(clock, number.longValue());
+        }
     }
 }
