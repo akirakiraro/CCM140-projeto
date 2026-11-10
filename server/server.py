@@ -1,4 +1,4 @@
-"""Servidor REP: login, canais, publicacao e eleicao do coordenador."""
+"""Servidor REP: login, canais, publicacao, eleicao e copia do registro."""
 
 import os
 import threading
@@ -8,6 +8,7 @@ import msgpack
 import zmq
 
 from protocol import dispatch
+from replica import accept_remote, fresh_record, pack_state, pull_known, push_to_peers
 from store import load_state, save_state
 
 STATE_PATH = os.environ.get("STATE_PATH", "/data/state.json")
@@ -33,6 +34,8 @@ coordinator = ""
 known_servers: list[dict] = []
 my_rank = 0
 coordinator_seen = 0.0
+# O fio do broker e o fio da porta 5560 gravam o mesmo arquivo.
+state_lock = threading.Lock()
 
 
 def decode(raw: bytes) -> dict | None:
@@ -103,13 +106,56 @@ def server_now() -> int:
 
 def serve_one(socket: zmq.Socket, publisher: zmq.Socket, state: dict, context: zmq.Context) -> None:
     message = receive(socket)
-    reply, payload = dispatch(state, message, server_now())
+    with state_lock:
+        reply, payload = dispatch(state, message, server_now())
+        record = fresh_record(state, reply)
+        if reply["op"] in PERSIST_OPS:
+            save_state(STATE_PATH, state)
     if payload is not None:
         send_publication(publisher, payload)
-    if reply["op"] in PERSIST_OPS:
-        save_state(STATE_PATH, state)
+    # O bot so segue depois da copia. O proximo pedido no outro servidor ja acha o registro.
+    if record is not None:
+        push_replica(context, record)
     send_reply(socket, reply)
     count_client(context, publisher)
+
+
+def push_replica(context: zmq.Context, record: dict) -> None:
+    push_to_peers(
+        context,
+        ask,
+        known_servers,
+        record,
+        SERVER_NAME,
+        server_now,
+        PEER_PORT,
+        ELECTION_TIMEOUT_MS,
+    )
+
+
+def accept_replica(state: dict, message: dict) -> dict:
+    return accept_remote(state, message, state_lock, STATE_PATH, server_now, SERVER_NAME)
+
+
+def snapshot_reply(state: dict) -> dict:
+    with state_lock:
+        body = pack_state(state)
+    return {"op": "snapshot_ok", "ts": server_now(), "name": SERVER_NAME, **body}
+
+
+def pull_replicas(context: zmq.Context, state: dict) -> None:
+    pull_known(
+        context,
+        ask,
+        state,
+        state_lock,
+        known_servers,
+        SERVER_NAME,
+        server_now,
+        PEER_PORT,
+        ELECTION_TIMEOUT_MS,
+        STATE_PATH,
+    )
 
 
 def ask(
@@ -381,15 +427,21 @@ def peer_reply(message: dict | None, arrived: int) -> dict:
     return {"op": "error", "ts": server_now(), "error": f"pedido invalido: {message!r}"}
 
 
-def answer_peer(socket: zmq.Socket) -> None:
+def answer_peer(socket: zmq.Socket, state: dict) -> None:
     message = receive(socket)
+    if isinstance(message, dict) and message.get("op") == "replicate":
+        send_reply(socket, accept_replica(state, message))
+        return
+    if isinstance(message, dict) and message.get("op") == "snapshot":
+        send_reply(socket, snapshot_reply(state))
+        return
     send_reply(socket, peer_reply(message, server_now()))
 
 
-def peer_loop(context: zmq.Context) -> None:
+def peer_loop(context: zmq.Context, state: dict) -> None:
     socket = open_peer(context)
     while True:
-        answer_peer(socket)
+        answer_peer(socket, state)
 
 
 def main() -> None:
@@ -397,7 +449,7 @@ def main() -> None:
     state = load_state(STATE_PATH)
     context = zmq.Context()
     # O REP do broker fica bloqueado no recv. A eleicao responde neste outro fio.
-    threading.Thread(target=peer_loop, args=(context,), daemon=True).start()
+    threading.Thread(target=peer_loop, args=(context, state), daemon=True).start()
     # O proxy nao guarda historico. A inscricao no topico sobe antes do anuncio.
     threading.Thread(target=listen_servers, args=(context,), daemon=True).start()
     time.sleep(1)
@@ -409,6 +461,8 @@ def main() -> None:
     print(f"servidores conhecidos: {known}", flush=True)
     known_servers = known
     my_rank = rank
+    # O historico que ja estava no outro disco entra antes do primeiro pedido do bot.
+    pull_replicas(context, state)
     publisher = open_pub(context)
     elect(context, known, rank)
     if coordinator == SERVER_NAME:
