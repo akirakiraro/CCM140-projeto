@@ -2,6 +2,7 @@ package bbs;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -14,7 +15,7 @@ import org.zeromq.ZContext;
 import org.zeromq.ZMQ;
 
 /**
- * Bot: login, canais, uma publicacao por volta e inscricao num canal sorteado.
+ * Bot padronizado da parte 2: cria canal, inscreve e publica em rajada.
  * Exemplo: USER_NAME=bot-1 java -jar bbs-bot.jar
  */
 public final class Bot {
@@ -31,7 +32,7 @@ public final class Bot {
             startFeed(context);
             ZMQ.Socket socket = connect(context);
             loginUntilOk(socket);
-            keepChannels(socket);
+            publishLoop(socket);
         }
     }
 
@@ -57,14 +58,12 @@ public final class Bot {
         }
     }
 
-    private static void keepChannels(ZMQ.Socket socket) throws Exception {
+    private static void publishLoop(ZMQ.Socket socket) throws Exception {
         while (true) {
             List<String> channels = list(socket);
-            ensure(socket, channels, "geral");
-            ensure(socket, channels, "sala-" + USER);
-            subscribeRandom(channels);
-            publishGeral(socket);
-            Thread.sleep(3000);
+            createIfFew(socket, channels);
+            subscribeOne(channels);
+            publishBurst(socket, channels);
         }
     }
 
@@ -77,17 +76,61 @@ public final class Bot {
         throw new IllegalArgumentException("channels invalido: " + value);
     }
 
-    private static void publishGeral(ZMQ.Socket socket) throws Exception {
-        exchange(socket, Messages.publish(USER, "geral", "mensagem de " + USER));
+    private static void createIfFew(ZMQ.Socket socket, List<String> channels) throws Exception {
+        if (channels.size() >= 5) {
+            return;
+        }
+        exchange(socket, Messages.createChannel(USER, freshName(channels)));
     }
 
-    private static void subscribeRandom(List<String> channels) {
-        if (!SUBSCRIBED.isEmpty() || channels.isEmpty()) {
+    private static String freshName(List<String> channels) {
+        int number = channels.size() + 1;
+        String name = "c" + number;
+        while (channels.contains(name)) {
+            number += 1;
+            name = "c" + number;
+        }
+        return name;
+    }
+
+    private static void subscribeOne(List<String> channels) {
+        if (SUBSCRIBED.size() >= 3) {
+            return;
+        }
+        List<String> open = new ArrayList<>();
+        for (String name : channels) {
+            if (!SUBSCRIBED.contains(name)) {
+                open.add(name);
+            }
+        }
+        if (open.isEmpty()) {
+            return;
+        }
+        String channel = open.get(ThreadLocalRandom.current().nextInt(open.size()));
+        SUBSCRIBED.add(channel);
+        JOINS.offer(channel);
+    }
+
+    private static void publishBurst(ZMQ.Socket socket, List<String> channels) throws Exception {
+        if (channels.isEmpty()) {
             return;
         }
         String channel = channels.get(ThreadLocalRandom.current().nextInt(channels.size()));
-        SUBSCRIBED.add(channel);
-        JOINS.offer(channel);
+        sendTen(socket, channel);
+    }
+
+    private static void sendTen(ZMQ.Socket socket, String channel) throws Exception {
+        for (int sent = 0; sent < 10; sent++) {
+            waitBetween(sent);
+            int value = ThreadLocalRandom.current().nextInt(0, 1_000_000);
+            exchange(socket, Messages.publish(USER, channel, "m" + value));
+        }
+    }
+
+    private static void waitBetween(int sent) throws InterruptedException {
+        if (sent > 0) {
+            Thread.sleep(1000);
+        }
     }
 
     private static void listen(ZContext context) {
@@ -142,13 +185,6 @@ public final class Bot {
             + ", mensagem=" + text
             + ", ts_envio=" + sent
             + ", ts_recebimento=" + received + "}";
-    }
-
-    private static void ensure(ZMQ.Socket socket, List<String> known, String channel) throws Exception {
-        if (known.contains(channel)) {
-            return;
-        }
-        exchange(socket, Messages.createChannel(USER, channel));
     }
 
     private static Map<String, Object> exchange(ZMQ.Socket socket, Map<String, Object> request)
