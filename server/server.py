@@ -7,6 +7,7 @@ import time
 import msgpack
 import zmq
 
+from logfmt import show
 from protocol import dispatch
 from replica import accept_remote, fresh_record, pack_state, pull_known, push_to_peers
 from store import load_state, save_state
@@ -81,7 +82,7 @@ def stamp(message: dict) -> dict:
 
 def receive(socket: zmq.Socket) -> dict | None:
     message = decode(socket.recv())
-    print(f"Mensagem recebida: {message}", flush=True)
+    show("Mensagem recebida", message)
     observe(message)
     return message
 
@@ -97,7 +98,7 @@ def send_publication(publisher: zmq.Socket, payload: dict) -> None:
 def send_reply(socket: zmq.Socket, reply: dict) -> None:
     stamp(reply)
     socket.send(msgpack.packb(reply, use_bin_type=True))
-    print(f"Mensagem enviada: {reply}", flush=True)
+    show("Mensagem enviada", reply)
 
 
 def server_now() -> int:
@@ -170,13 +171,13 @@ def ask(
     socket.connect(url)
     message = stamp(fields)
     if not send_packet(socket, message):
-        print(f"Mensagem enviada: {message}", flush=True)
-        print("Mensagem recebida: None", flush=True)
+        show("Mensagem enviada", message)
+        show("Mensagem recebida", None)
         socket.close()
         return None
-    print(f"Mensagem enviada: {message}", flush=True)
+    show("Mensagem enviada", message)
     reply = recv_or_none(socket)
-    print(f"Mensagem recebida: {reply}", flush=True)
+    show("Mensagem recebida", reply)
     observe(reply)
     socket.close()
     return reply

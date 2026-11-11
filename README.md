@@ -38,7 +38,7 @@ Os volumes `servidor-1-data` e `servidor-2-data` sobrevivem a um restart. Cada u
 
 **Inscrição:** o bot mantém um socket SUB em `tcp://proxy:5558` junto com o REQ do broker. Enquanto tiver menos de 3 inscrições, cada volta sorteia um canal da lista em que ainda não entrou. O que chega é impresso com o canal, o texto, o `ts` de envio (veio na mensagem) e o `ts` de recebimento (relógio do bot ao receber).
 
-**Volta do bot:** se a lista tem menos de 5 canais, cria um. O nome é `c` mais o próximo número que não está na lista (`c1`, `c2`, ...). Depois escolhe um canal dessa lista e envia 10 textos aleatórios (`m` e um número), com 1 segundo entre cada envio.
+**Volta do bot:** se a lista tem menos de 5 canais, cria um. O nome é `Sala-` mais o próximo número que não está na lista (`Sala-1`, `Sala-2`, ...). Depois escolhe um canal dessa lista e envia 10 textos aleatórios (`mensagem`, um número e o nome do bot), com 1 segundo entre cada envio.
 
 Gravação atômica (arquivo temporário + rename) para um restart no meio da escrita não corromper o estado.
 

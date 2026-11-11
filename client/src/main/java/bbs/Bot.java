@@ -87,10 +87,10 @@ public final class Bot {
 
     private static String freshName(List<String> channels) {
         int number = channels.size() + 1;
-        String name = "c" + number;
+        String name = "Sala-" + number;
         while (channels.contains(name)) {
             number += 1;
-            name = "c" + number;
+            name = "Sala-" + number;
         }
         return name;
     }
@@ -125,7 +125,7 @@ public final class Bot {
         for (int sent = 0; sent < 10; sent++) {
             waitBetween(sent);
             int value = ThreadLocalRandom.current().nextInt(0, 1_000_000);
-            exchange(socket, Messages.publish(USER, channel, "m" + value));
+            exchange(socket, Messages.publish(USER, channel, "mensagem " + value + " do " + USER));
         }
     }
 
