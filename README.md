@@ -62,7 +62,7 @@ No push, depois de `login_ok`, `create_ok` ou `publish_ok`, quem gravou manda `o
 
 No pull, na subida, o servidor manda `op=snapshot`. A resposta `snapshot_ok` traz as três listas. Ele junta ao arquivo local o que faltava. Registro repetido não entra de novo. Login casa usuário e `ts`. Publicação casa usuário, canal, texto, `ts` e `request_ts`. Canal casa pelo nome. Cada disco mantém a ordem que já tinha e acrescenta o resto no fim.
 
-**O que mudou em relação à aula.**
+**O que mudou em relação ao conteudo das aulas.**
 
 - Quem aceitou o pedido empurra o registro que acabou de gravar. A outra réplica guarda a cópia e não executa o pedido outra vez.
 - O push copia para quem está no ar. O pull na subida traz o que ficou de fora, inclusive quando a cópia não teve resposta em 3 segundos. O servidor responde ao bot mesmo assim.
