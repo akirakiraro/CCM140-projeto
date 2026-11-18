@@ -24,6 +24,9 @@ public final class Bot {
     private static final String PROXY = System.getenv().getOrDefault("PROXY_URL", "tcp://proxy:5558");
     private static final Set<String> SUBSCRIBED = new HashSet<>();
     private static final BlockingQueue<String> JOINS = new LinkedBlockingQueue<>();
+    private static final int PAUSE_AFTER_CHANNEL_MS = 3000;
+    private static final int PAUSE_BETWEEN_TEXTS_MS = 5000;
+    private static final int TEXTS_PER_TURN = 3;
     // Lamport do processo: a thread do REQ e a dos canais compartilham este contador.
     private static long clock = 0;
 
@@ -65,6 +68,7 @@ public final class Bot {
             List<String> channels = list(socket);
             createIfFew(socket, channels);
             subscribeOne(channels);
+            Thread.sleep(PAUSE_AFTER_CHANNEL_MS);
             publishBurst(socket, channels);
         }
     }
@@ -118,11 +122,11 @@ public final class Bot {
             return;
         }
         String channel = channels.get(ThreadLocalRandom.current().nextInt(channels.size()));
-        sendTen(socket, channel);
+        sendTexts(socket, channel);
     }
 
-    private static void sendTen(ZMQ.Socket socket, String channel) throws Exception {
-        for (int sent = 0; sent < 10; sent++) {
+    private static void sendTexts(ZMQ.Socket socket, String channel) throws Exception {
+        for (int sent = 0; sent < TEXTS_PER_TURN; sent++) {
             waitBetween(sent);
             int value = ThreadLocalRandom.current().nextInt(0, 1_000_000);
             exchange(socket, Messages.publish(USER, channel, "mensagem " + value + " do " + USER));
@@ -131,7 +135,7 @@ public final class Bot {
 
     private static void waitBetween(int sent) throws InterruptedException {
         if (sent > 0) {
-            Thread.sleep(1000);
+            Thread.sleep(PAUSE_BETWEEN_TEXTS_MS);
         }
     }
 
