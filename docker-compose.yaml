@@ -45,6 +45,19 @@ services:
       - proxy
       - referencia
 
+  servidor-3:
+    build: ./server
+    container_name: bbs-servidor-3
+    environment:
+      STATE_PATH: /data/state.json
+      SERVER_NAME: servidor-3
+    volumes:
+      - servidor-3-data:/data
+    depends_on:
+      - broker
+      - proxy
+      - referencia
+
   cliente-1:
     build: ./client
     container_name: bbs-cliente-1
@@ -55,6 +68,7 @@ services:
     depends_on:
       - servidor-1
       - servidor-2
+      - servidor-3
       - proxy
 
   cliente-2:
@@ -67,8 +81,10 @@ services:
     depends_on:
       - servidor-1
       - servidor-2
+      - servidor-3
       - proxy
 
 volumes:
   servidor-1-data:
   servidor-2-data:
+  servidor-3-data:
